@@ -34,6 +34,7 @@ interface CompareRow {
 
 interface RankPoint {
   exam: string
+  examDate: string
   classRank: number | null
   gradeRank: number | null
   classDelta: number | null
@@ -65,19 +66,46 @@ function computeRankDelta(current: number | null, previous: number | null): numb
   return previous - current
 }
 
+function buildClassRankMap(records: ScoreRecord[]): Map<string, Map<string, number>> {
+  const exams = listExams(records)
+  const result = new Map<string, Map<string, number>>()
+
+  exams.forEach((exam) => {
+    const key = `${exam.exam}__${exam.examDate}`
+    const examRows = records.filter((r) => r.exam === exam.exam && r.examDate === exam.examDate)
+    const totalByStudent = new Map<string, number>()
+    examRows.forEach((row) => {
+      totalByStudent.set(row.student, (totalByStudent.get(row.student) ?? 0) + row.score)
+    })
+
+    const sorted = [...totalByStudent.entries()].sort((a, b) => b[1] - a[1])
+    const rankMap = new Map<string, number>()
+    sorted.forEach(([studentName], index) => {
+      rankMap.set(studentName, index + 1)
+    })
+    result.set(key, rankMap)
+  })
+
+  return result
+}
+
 function buildRankTimeline(records: ScoreRecord[], student: string): RankPoint[] {
+  const classRankMap = buildClassRankMap(records)
   const studentRecords = records.filter((record) => record.student === student)
   const exams = listExams(studentRecords)
 
   const raw = exams.map((exam) => {
+    const examKey = `${exam.exam}__${exam.examDate}`
     const rows = studentRecords.filter((record) => record.exam === exam.exam && record.examDate === exam.examDate)
-    const rowWithRank = rows.find((row) => row.classRank !== null || row.gradeRank !== null) ?? rows[0]
+    const rowWithRank = rows.find((row) => row.gradeRank !== null) ?? rows[0]
+    const classRank = classRankMap.get(examKey)?.get(student) ?? null
 
     return {
       exam: exam.exam,
-      classRank: rowWithRank?.classRank ?? null,
+      examDate: exam.examDate,
+      classRank,
       gradeRank: rowWithRank?.gradeRank ?? null,
-      classDelta: rowWithRank?.classRankDelta ?? null,
+      classDelta: null,
       gradeDelta: rowWithRank?.gradeRankDelta ?? null,
     }
   })
@@ -255,16 +283,16 @@ function RadarCompareChart({ rows }: { rows: CompareRow[] }) {
           </g>
         ))}
 
-        <polygon points={toPolygon((r) => r.classRate)} fill="rgba(148,163,184,0.25)" stroke="#64748b" strokeWidth="2" />
-        <polygon points={toPolygon((r) => r.studentRate)} fill="rgba(13,107,138,0.25)" stroke="#0d6b8a" strokeWidth="2" />
+        <polygon points={toPolygon((r) => r.classRate)} fill="rgba(100,116,139,0.20)" stroke="#475569" strokeWidth="2.2" />
+        <polygon points={toPolygon((r) => r.studentRate)} fill="rgba(234,88,12,0.28)" stroke="#ea580c" strokeWidth="2.4" />
       </svg>
 
       <div className="stats-row">
         <span>
-          <span style={{ display: 'inline-block', width: 10, height: 10, background: '#0d6b8a', marginRight: 6 }} />学生
+          <span style={{ display: 'inline-block', width: 10, height: 10, background: '#ea580c', marginRight: 6 }} />学生
         </span>
         <span>
-          <span style={{ display: 'inline-block', width: 10, height: 10, background: '#64748b', marginRight: 6 }} />班级均分
+          <span style={{ display: 'inline-block', width: 10, height: 10, background: '#475569', marginRight: 6 }} />班级均分
         </span>
       </div>
     </div>

@@ -4,6 +4,16 @@ import { getExamSummaries } from '../../modules/analysis/class/classMetrics'
 import { listSubjects } from '../../modules/analysis/shared/selectors'
 import { useDatasetStore } from '../../store/datasetStore'
 
+const FULL_MARK_SUBJECTS: Record<string, number> = {
+  语文: 150,
+  数学: 150,
+  英语: 150,
+}
+
+function getFullMark(subject: string): number {
+  return FULL_MARK_SUBJECTS[subject] ?? 100
+}
+
 function RadarChart({ data }: { data: Array<{ subject: string; value: number }> }) {
   if (data.length < 3) {
     return <p>八卦图数据不足</p>
@@ -56,7 +66,7 @@ export function ClassDashboard() {
     return subjects.map((subject) => {
       const rows = activeRecords.filter((r) => r.subject === subject)
       const avg = rows.length ? rows.reduce((sum, item) => sum + item.score, 0) / rows.length : 0
-      return { subject, value: avg }
+      return { subject, value: (avg / getFullMark(subject)) * 100 }
     })
   }, [activeRecords])
 
@@ -69,7 +79,7 @@ export function ClassDashboard() {
       <h2>班级分析</h2>
 
       <div className="panel">
-        <h3>科目平均分八卦图</h3>
+        <h3>科目平均得分率八卦图（语数英按150分，其它按100分）</h3>
         <RadarChart data={radarData} />
       </div>
 

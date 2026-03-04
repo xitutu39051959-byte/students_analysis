@@ -32,6 +32,14 @@ interface CompareRow {
   classRate: number
 }
 
+interface RankPoint {
+  exam: string
+  classRank: number | null
+  gradeRank: number | null
+  classDelta: number | null
+  gradeDelta: number | null
+}
+
 function getFullMark(subject: string): number {
   return FULL_MARK_SUBJECTS[subject] ?? 100
 }
@@ -48,6 +56,40 @@ function renderDelta(delta: number | null) {
     return `+${delta.toFixed(1)}`
   }
   return delta.toFixed(1)
+}
+
+function computeRankDelta(current: number | null, previous: number | null): number | null {
+  if (current === null || previous === null) {
+    return null
+  }
+  return previous - current
+}
+
+function buildRankTimeline(records: ScoreRecord[], student: string): RankPoint[] {
+  const studentRecords = records.filter((record) => record.student === student)
+  const exams = listExams(studentRecords)
+
+  const raw = exams.map((exam) => {
+    const rows = studentRecords.filter((record) => record.exam === exam.exam && record.examDate === exam.examDate)
+    const rowWithRank = rows.find((row) => row.classRank !== null || row.gradeRank !== null) ?? rows[0]
+
+    return {
+      exam: exam.exam,
+      classRank: rowWithRank?.classRank ?? null,
+      gradeRank: rowWithRank?.gradeRank ?? null,
+      classDelta: rowWithRank?.classRankDelta ?? null,
+      gradeDelta: rowWithRank?.gradeRankDelta ?? null,
+    }
+  })
+
+  return raw.map((item, idx) => {
+    const prev = raw[idx - 1]
+    return {
+      ...item,
+      classDelta: item.classDelta ?? computeRankDelta(item.classRank, prev?.classRank ?? null),
+      gradeDelta: item.gradeDelta ?? computeRankDelta(item.gradeRank, prev?.gradeRank ?? null),
+    }
+  })
 }
 
 function buildProgressData(records: ScoreRecord[], student: string): ProgressData {
@@ -173,53 +215,48 @@ function ProgressLineChart({ data }: { data: ProgressData }) {
   )
 }
 
-function CompareBarChart({ rows }: { rows: CompareRow[] }) {
-  if (rows.length === 0) {
-    return <p>对比图数据不足</p>
+function RadarCompareChart({ rows }: { rows: CompareRow[] }) {
+  if (rows.length < 3) {
+    return <p>八卦图数据不足</p>
   }
 
-  const width = 760
-  const height = 280
-  const padding = 40
-  const groupWidth = (width - padding * 2) / rows.length
-  const barWidth = Math.max(8, groupWidth * 0.28)
+  const size = 360
+  const center = size / 2
+  const radius = 130
 
-  const yByRate = (rate: number) => height - padding - (rate / 100) * (height - padding * 2)
+  const angle = (index: number) => (Math.PI * 2 * index) / rows.length - Math.PI / 2
+  const axisPoints = rows.map((_, idx) => {
+    const a = angle(idx)
+    return { x: center + radius * Math.cos(a), y: center + radius * Math.sin(a) }
+  })
+
+  const toPolygon = (selector: (row: CompareRow) => number | null) =>
+    rows
+      .map((row, idx) => {
+        const value = selector(row)
+        const rate = value === null ? 0 : value
+        const r = (rate / 100) * radius
+        const a = angle(idx)
+        return `${center + r * Math.cos(a)},${center + r * Math.sin(a)}`
+      })
+      .join(' ')
 
   return (
     <div>
-      <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: '280px' }}>
-        <rect width={width} height={height} fill="#ffffff" />
+      <svg viewBox={`0 0 ${size} ${size}`} style={{ width: '100%', maxWidth: '380px', height: '360px' }}>
+        <circle cx={center} cy={center} r={radius} fill="#f5fbfd" stroke="#d0d9e1" />
 
-        {[0, 25, 50, 75, 100].map((grid) => {
-          const y = yByRate(grid)
-          return (
-            <g key={grid}>
-              <line x1={padding} y1={y} x2={width - padding} y2={y} stroke="#e2e8f0" />
-              <text x={10} y={y + 4} fontSize="11" fill="#64748b">
-                {grid}%
-              </text>
-            </g>
-          )
-        })}
+        {axisPoints.map((p, idx) => (
+          <g key={rows[idx].subject}>
+            <line x1={center} y1={center} x2={p.x} y2={p.y} stroke="#c4d1d8" />
+            <text x={p.x} y={p.y} textAnchor="middle" fontSize="11" fill="#334e5a">
+              {rows[idx].subject}
+            </text>
+          </g>
+        ))}
 
-        {rows.map((row, index) => {
-          const groupX = padding + index * groupWidth
-          const classY = yByRate(row.classRate)
-          const studentY = row.studentRate === null ? height - padding : yByRate(row.studentRate)
-
-          return (
-            <g key={row.subject}>
-              <rect x={groupX + groupWidth * 0.18} y={classY} width={barWidth} height={height - padding - classY} fill="#94a3b8" />
-              {row.studentRate !== null ? (
-                <rect x={groupX + groupWidth * 0.54} y={studentY} width={barWidth} height={height - padding - studentY} fill="#0d6b8a" />
-              ) : null}
-              <text x={groupX + groupWidth / 2} y={height - 10} textAnchor="middle" fontSize="11" fill="#334e5a">
-                {row.subject}
-              </text>
-            </g>
-          )
-        })}
+        <polygon points={toPolygon((r) => r.classRate)} fill="rgba(148,163,184,0.25)" stroke="#64748b" strokeWidth="2" />
+        <polygon points={toPolygon((r) => r.studentRate)} fill="rgba(13,107,138,0.25)" stroke="#0d6b8a" strokeWidth="2" />
       </svg>
 
       <div className="stats-row">
@@ -227,7 +264,7 @@ function CompareBarChart({ rows }: { rows: CompareRow[] }) {
           <span style={{ display: 'inline-block', width: 10, height: 10, background: '#0d6b8a', marginRight: 6 }} />学生
         </span>
         <span>
-          <span style={{ display: 'inline-block', width: 10, height: 10, background: '#94a3b8', marginRight: 6 }} />班级均分
+          <span style={{ display: 'inline-block', width: 10, height: 10, background: '#64748b', marginRight: 6 }} />班级均分
         </span>
       </div>
     </div>
@@ -273,6 +310,7 @@ export function StudentAnalysisPage() {
         progress: ProgressData
         compareRows: CompareRow[]
         overall: { student: number | null; classAvg: number }
+        rankTimeline: RankPoint[]
       }>
     }
 
@@ -284,6 +322,7 @@ export function StudentAnalysisPage() {
         progress,
         compareRows,
         overall: calcOverallRate(compareRows),
+        rankTimeline: buildRankTimeline(activeRecords, name),
       }
     })
   }, [activeRecords, students, latestExam])
@@ -294,6 +333,7 @@ export function StudentAnalysisPage() {
     [activeRecords, student, currentExam, latestExam],
   )
   const singleOverall = useMemo(() => calcOverallRate(singleCompareRows), [singleCompareRows])
+  const singleRankTimeline = useMemo(() => (student ? buildRankTimeline(activeRecords, student) : []), [activeRecords, student])
 
   if (!activeDatasetId || activeRecords.length === 0) {
     return <EmptyState title="暂无数据" description="请先导入数据后再进行学生分析。" />
@@ -367,14 +407,39 @@ export function StudentAnalysisPage() {
                 <ProgressLineChart data={item.progress} />
               </div>
               <div className="panel" style={{ marginTop: 10 }}>
-                <h4>{item.student} 全科与班级均分比较（最近考试）</h4>
-                <CompareBarChart rows={item.compareRows} />
+                <h4>{item.student} 全科与班级均分八卦图（最近考试）</h4>
+                <RadarCompareChart rows={item.compareRows} />
+              </div>
+              <div className="panel" style={{ marginTop: 10 }}>
+                <h4>{item.student} 班级/段名次进退</h4>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>考试</th>
+                      <th>班排</th>
+                      <th>班排进退</th>
+                      <th>段排</th>
+                      <th>段排进退</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {item.rankTimeline.map((row) => (
+                      <tr key={`${item.student}-${row.exam}`}>
+                        <td>{row.exam}</td>
+                        <td>{row.classRank ?? '无'}</td>
+                        <td>{renderDelta(row.classDelta)}</td>
+                        <td>{row.gradeRank ?? '无'}</td>
+                        <td>{renderDelta(row.gradeDelta)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </details>
           ))}
         </div>
       ) : !student ? (
-        <EmptyState title="请选择学生" description="选择学生后将展示进退步折线图与班均对比。" />
+        <EmptyState title="请选择学生" description="选择学生后将展示进退步折线图、八卦图与名次进退。" />
       ) : (
         <>
           <div className="panel">
@@ -383,12 +448,38 @@ export function StudentAnalysisPage() {
           </div>
 
           <div className="panel">
-            <h3>{student} 全科与班级均分比较（最近考试）</h3>
+            <h3>{student} 全科与班级均分八卦图（最近考试）</h3>
             <p>
               个人全科得分率：{singleOverall.student === null ? '无' : `${singleOverall.student.toFixed(1)}%`}，班级全科均分率：
               {singleOverall.classAvg.toFixed(1)}%
             </p>
-            <CompareBarChart rows={singleCompareRows} />
+            <RadarCompareChart rows={singleCompareRows} />
+          </div>
+
+          <div className="panel">
+            <h3>{student} 班级/段名次进退</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>考试</th>
+                  <th>班排</th>
+                  <th>班排进退</th>
+                  <th>段排</th>
+                  <th>段排进退</th>
+                </tr>
+              </thead>
+              <tbody>
+                {singleRankTimeline.map((row) => (
+                  <tr key={`${student}-${row.exam}`}>
+                    <td>{row.exam}</td>
+                    <td>{row.classRank ?? '无'}</td>
+                    <td>{renderDelta(row.classDelta)}</td>
+                    <td>{row.gradeRank ?? '无'}</td>
+                    <td>{renderDelta(row.gradeDelta)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
 
           <div className="panel">

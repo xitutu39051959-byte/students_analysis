@@ -11,6 +11,10 @@ interface ParsedRecord {
   考试: string
   科目: string
   分数: number
+  班排?: number | null
+  段排?: number | null
+  班排进退?: number | null
+  段排进退?: number | null
 }
 
 interface ParseStats {
@@ -26,6 +30,7 @@ interface ParsePreview {
   headerRow: number
   subjectColumns: string[]
   ignoredColumns: string[]
+  rankColumns: string[]
   recordCount: number
 }
 
@@ -39,6 +44,11 @@ const EXAM_ALIASES = ['考试', '考试名称']
 const SUBJECT_ALIASES = ['科目', '学科']
 const SCORE_ALIASES = ['分数', '成绩']
 
+const CLASS_RANK_ALIASES = ['班排', '班级排名', '班名次']
+const GRADE_RANK_ALIASES = ['段排', '年级排名', '段名次']
+const CLASS_RANK_DELTA_ALIASES = ['班排进退', '班级进退']
+const GRADE_RANK_DELTA_ALIASES = ['段排进退', '年级进退']
+
 function normalizeCell(value: unknown): string {
   if (value === null || value === undefined) {
     return ''
@@ -50,8 +60,12 @@ function stripFileExtension(fileName: string): string {
   return fileName.replace(/\.[^.]+$/, '')
 }
 
+function matchesAnyAlias(name: string, aliases: string[]): boolean {
+  return aliases.includes(name)
+}
+
 function isIgnoredWideColumn(name: string): boolean {
-  return /(排|进退|总分|折算|座号|排名)/.test(name)
+  return /(总分|折算|座号|排名|班排|段排|进退)/.test(name)
 }
 
 function parseScoreValue(raw: string): number | null {
@@ -68,8 +82,29 @@ function parseScoreValue(raw: string): number | null {
   return value
 }
 
+function parseRankValue(raw: string): number | null {
+  if (!raw) {
+    return null
+  }
+  const match = raw.match(/-?\d+(\.\d+)?/)
+  if (!match) {
+    return null
+  }
+  const value = Number(match[0])
+  return Number.isNaN(value) ? null : value
+}
+
 function findColumnIndex(headers: string[], aliases: string[]): number {
-  return headers.findIndex((header) => aliases.includes(header))
+  return headers.findIndex((header) => matchesAnyAlias(header, aliases))
+}
+
+function readRankFields(row: string[], idx: { classRank: number; gradeRank: number; classDelta: number; gradeDelta: number }) {
+  return {
+    班排: idx.classRank >= 0 ? parseRankValue(normalizeCell(row[idx.classRank])) : null,
+    段排: idx.gradeRank >= 0 ? parseRankValue(normalizeCell(row[idx.gradeRank])) : null,
+    班排进退: idx.classDelta >= 0 ? parseRankValue(normalizeCell(row[idx.classDelta])) : null,
+    段排进退: idx.gradeDelta >= 0 ? parseRankValue(normalizeCell(row[idx.gradeDelta])) : null,
+  }
 }
 
 function detectHeaderRow(rows: string[][]): { rowIndex: number; mode: 'long' | 'wide' } {
@@ -109,6 +144,13 @@ function parseLongTable(rows: string[][], headerRow: number, fallbackExamName: s
   const subjectIndex = findColumnIndex(headers, SUBJECT_ALIASES)
   const scoreIndex = findColumnIndex(headers, SCORE_ALIASES)
 
+  const rankIndex = {
+    classRank: findColumnIndex(headers, CLASS_RANK_ALIASES),
+    gradeRank: findColumnIndex(headers, GRADE_RANK_ALIASES),
+    classDelta: findColumnIndex(headers, CLASS_RANK_DELTA_ALIASES),
+    gradeDelta: findColumnIndex(headers, GRADE_RANK_DELTA_ALIASES),
+  }
+
   if (studentIndex < 0 || subjectIndex < 0 || scoreIndex < 0) {
     throw new Error('长表识别失败：缺少学生/科目/分数字段')
   }
@@ -125,12 +167,25 @@ function parseLongTable(rows: string[][], headerRow: number, fallbackExamName: s
       continue
     }
 
-    records.push({ 学生: student, 考试: exam, 科目: subject, 分数: score })
+    records.push({
+      学生: student,
+      考试: exam,
+      科目: subject,
+      分数: score,
+      ...readRankFields(row, rankIndex),
+    })
   }
 
   if (!records.length) {
     throw new Error('未解析到有效记录，请检查长表数据')
   }
+
+  const rankColumns = [
+    rankIndex.classRank >= 0 ? headers[rankIndex.classRank] : '',
+    rankIndex.gradeRank >= 0 ? headers[rankIndex.gradeRank] : '',
+    rankIndex.classDelta >= 0 ? headers[rankIndex.classDelta] : '',
+    rankIndex.gradeDelta >= 0 ? headers[rankIndex.gradeDelta] : '',
+  ].filter(Boolean)
 
   return {
     records,
@@ -140,6 +195,7 @@ function parseLongTable(rows: string[][], headerRow: number, fallbackExamName: s
       headerRow: headerRow + 1,
       subjectColumns: Array.from(new Set(records.map((item) => item.科目))).sort((a, b) => a.localeCompare(b)),
       ignoredColumns: [],
+      rankColumns,
       recordCount: records.length,
     },
   }
@@ -153,12 +209,28 @@ function parseWideTable(rows: string[][], headerRow: number, examName: string, s
     throw new Error('宽表识别失败：缺少学生列')
   }
 
+  const rankIndex = {
+    classRank: findColumnIndex(headers, CLASS_RANK_ALIASES),
+    gradeRank: findColumnIndex(headers, GRADE_RANK_ALIASES),
+    classDelta: findColumnIndex(headers, CLASS_RANK_DELTA_ALIASES),
+    gradeDelta: findColumnIndex(headers, GRADE_RANK_DELTA_ALIASES),
+  }
+
   const subjectIndices: Array<{ index: number; name: string }> = []
   const ignoredColumns: string[] = []
 
   for (let columnIndex = 0; columnIndex < headers.length; columnIndex += 1) {
     const header = headers[columnIndex]
     if (!header || columnIndex === studentIndex) {
+      continue
+    }
+
+    if (
+      matchesAnyAlias(header, CLASS_RANK_ALIASES) ||
+      matchesAnyAlias(header, GRADE_RANK_ALIASES) ||
+      matchesAnyAlias(header, CLASS_RANK_DELTA_ALIASES) ||
+      matchesAnyAlias(header, GRADE_RANK_DELTA_ALIASES)
+    ) {
       continue
     }
 
@@ -188,6 +260,8 @@ function parseWideTable(rows: string[][], headerRow: number, examName: string, s
       continue
     }
 
+    const rankFields = readRankFields(row, rankIndex)
+
     for (const subject of subjectIndices) {
       const score = parseScoreValue(normalizeCell(row[subject.index]))
       if (score === null) {
@@ -199,6 +273,7 @@ function parseWideTable(rows: string[][], headerRow: number, examName: string, s
         考试: examName,
         科目: subject.name,
         分数: score,
+        ...rankFields,
       })
     }
   }
@@ -206,6 +281,13 @@ function parseWideTable(rows: string[][], headerRow: number, examName: string, s
   if (!records.length) {
     throw new Error('未解析到有效记录，请检查宽表数据')
   }
+
+  const rankColumns = [
+    rankIndex.classRank >= 0 ? headers[rankIndex.classRank] : '',
+    rankIndex.gradeRank >= 0 ? headers[rankIndex.gradeRank] : '',
+    rankIndex.classDelta >= 0 ? headers[rankIndex.classDelta] : '',
+    rankIndex.gradeDelta >= 0 ? headers[rankIndex.gradeDelta] : '',
+  ].filter(Boolean)
 
   return {
     records,
@@ -215,6 +297,7 @@ function parseWideTable(rows: string[][], headerRow: number, examName: string, s
       headerRow: headerRow + 1,
       subjectColumns: subjectIndices.map((item) => item.name),
       ignoredColumns: Array.from(new Set(ignoredColumns)),
+      rankColumns,
       recordCount: records.length,
     },
   }
@@ -239,7 +322,7 @@ function parseSheet(
 async function parseScoreFile(file: File, examName: string): Promise<ParseResult[]> {
   const ext = file.name.split('.').pop()?.toLowerCase()
   if (ext !== 'csv' && ext !== 'xlsx' && ext !== 'xls') {
-    throw new Error(`文件 ${file.name} 不是支持的格式`) 
+    throw new Error(`文件 ${file.name} 不是支持的格式`)
   }
 
   const buffer = await file.arrayBuffer()
@@ -268,13 +351,12 @@ async function parseScoreFile(file: File, examName: string): Promise<ParseResult
       const parsed = parseSheet(rows, sheetName, examNameBase, file.name, sheetNames.length > 1)
       results.push(parsed)
     } catch {
-      // Ignore sheets that are not score tables, while still parsing other sheets.
       continue
     }
   }
 
   if (!results.length) {
-    throw new Error(`文件 ${file.name} 未识别到可用成绩表`) 
+    throw new Error(`文件 ${file.name} 未识别到可用成绩表`)
   }
 
   return results
@@ -310,6 +392,10 @@ function toScoreRecords(records: ParsedRecord[], className: string, term: string
     examDate: examDateMap.get(record.考试) ?? '2026-01-01',
     className,
     term,
+    classRank: record.班排 ?? null,
+    gradeRank: record.段排 ?? null,
+    classRankDelta: record.班排进退 ?? null,
+    gradeRankDelta: record.段排进退 ?? null,
   }))
 }
 
@@ -455,6 +541,7 @@ export function UploadPage() {
                 <th>表头行</th>
                 <th>记录数</th>
                 <th>科目列</th>
+                <th>名次列</th>
                 <th>忽略列</th>
               </tr>
             </thead>
@@ -466,6 +553,7 @@ export function UploadPage() {
                   <td>第 {item.headerRow} 行</td>
                   <td>{item.recordCount}</td>
                   <td>{item.subjectColumns.join('、') || '无'}</td>
+                  <td>{item.rankColumns.join('、') || '无'}</td>
                   <td>{item.ignoredColumns.join('、') || '无'}</td>
                 </tr>
               ))}

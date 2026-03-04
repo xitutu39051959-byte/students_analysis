@@ -16,6 +16,10 @@ export interface ScoreRecord {
   examDate: string
   className: string
   term: string
+  classRank?: number | null
+  gradeRank?: number | null
+  classRankDelta?: number | null
+  gradeRankDelta?: number | null
 }
 
 export interface DatasetMeta {

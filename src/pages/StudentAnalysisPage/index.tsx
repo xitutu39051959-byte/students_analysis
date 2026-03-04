@@ -35,9 +35,11 @@ interface CompareRow {
 interface RankPoint {
   exam: string
   examDate: string
-  classRank: number | null
+  subjectClassRank: number | null
+  totalClassRank: number | null
   gradeRank: number | null
-  classDelta: number | null
+  subjectClassDelta: number | null
+  totalClassDelta: number | null
   gradeDelta: number | null
 }
 
@@ -66,7 +68,7 @@ function computeRankDelta(current: number | null, previous: number | null): numb
   return previous - current
 }
 
-function buildClassRankMap(records: ScoreRecord[]): Map<string, Map<string, number>> {
+function buildTotalClassRankMap(records: ScoreRecord[]): Map<string, Map<string, number>> {
   const exams = listExams(records)
   const result = new Map<string, Map<string, number>>()
 
@@ -89,8 +91,27 @@ function buildClassRankMap(records: ScoreRecord[]): Map<string, Map<string, numb
   return result
 }
 
-function buildRankTimeline(records: ScoreRecord[], student: string): RankPoint[] {
-  const classRankMap = buildClassRankMap(records)
+function buildSubjectClassRankMap(records: ScoreRecord[], subject: string): Map<string, Map<string, number>> {
+  const exams = listExams(records)
+  const result = new Map<string, Map<string, number>>()
+
+  exams.forEach((exam) => {
+    const key = `${exam.exam}__${exam.examDate}`
+    const examRows = records.filter((r) => r.exam === exam.exam && r.examDate === exam.examDate && r.subject === subject)
+    const sorted = [...examRows].sort((a, b) => b.score - a.score)
+    const rankMap = new Map<string, number>()
+    sorted.forEach((row, index) => {
+      rankMap.set(row.student, index + 1)
+    })
+    result.set(key, rankMap)
+  })
+
+  return result
+}
+
+function buildRankTimeline(records: ScoreRecord[], student: string, subjectForRank: string): RankPoint[] {
+  const totalClassRankMap = buildTotalClassRankMap(records)
+  const subjectClassRankMap = buildSubjectClassRankMap(records, subjectForRank)
   const studentRecords = records.filter((record) => record.student === student)
   const exams = listExams(studentRecords)
 
@@ -98,14 +119,17 @@ function buildRankTimeline(records: ScoreRecord[], student: string): RankPoint[]
     const examKey = `${exam.exam}__${exam.examDate}`
     const rows = studentRecords.filter((record) => record.exam === exam.exam && record.examDate === exam.examDate)
     const rowWithRank = rows.find((row) => row.gradeRank !== null) ?? rows[0]
-    const classRank = classRankMap.get(examKey)?.get(student) ?? null
+    const totalClassRank = totalClassRankMap.get(examKey)?.get(student) ?? null
+    const subjectClassRank = subjectClassRankMap.get(examKey)?.get(student) ?? null
 
     return {
       exam: exam.exam,
       examDate: exam.examDate,
-      classRank,
+      subjectClassRank,
+      totalClassRank,
       gradeRank: rowWithRank?.gradeRank ?? null,
-      classDelta: null,
+      subjectClassDelta: null,
+      totalClassDelta: null,
       gradeDelta: rowWithRank?.gradeRankDelta ?? null,
     }
   })
@@ -114,7 +138,9 @@ function buildRankTimeline(records: ScoreRecord[], student: string): RankPoint[]
     const prev = raw[idx - 1]
     return {
       ...item,
-      classDelta: item.classDelta ?? computeRankDelta(item.classRank, prev?.classRank ?? null),
+      subjectClassDelta:
+        item.subjectClassDelta ?? computeRankDelta(item.subjectClassRank, prev?.subjectClassRank ?? null),
+      totalClassDelta: item.totalClassDelta ?? computeRankDelta(item.totalClassRank, prev?.totalClassRank ?? null),
       gradeDelta: item.gradeDelta ?? computeRankDelta(item.gradeRank, prev?.gradeRank ?? null),
     }
   })
@@ -339,18 +365,24 @@ export function StudentAnalysisPage() {
         compareRows: CompareRow[]
         overall: { student: number | null; classAvg: number }
         rankTimeline: RankPoint[]
+        rankSubject: string
       }>
     }
 
     return students.map((name) => {
       const progress = buildProgressData(activeRecords, name)
       const compareRows = buildCompareRows(activeRecords, name, latestExam)
+      const subjectForRank = listSubjects(activeRecords).includes('语文')
+        ? '语文'
+        : listSubjects(activeRecords)[0] ?? ''
+
       return {
         student: name,
         progress,
         compareRows,
         overall: calcOverallRate(compareRows),
-        rankTimeline: buildRankTimeline(activeRecords, name),
+        rankTimeline: buildRankTimeline(activeRecords, name, subjectForRank),
+        rankSubject: subjectForRank,
       }
     })
   }, [activeRecords, students, latestExam])
@@ -361,7 +393,18 @@ export function StudentAnalysisPage() {
     [activeRecords, student, currentExam, latestExam],
   )
   const singleOverall = useMemo(() => calcOverallRate(singleCompareRows), [singleCompareRows])
-  const singleRankTimeline = useMemo(() => (student ? buildRankTimeline(activeRecords, student) : []), [activeRecords, student])
+  const rankSubjectForSingle = useMemo(() => {
+    if (subjectFilter !== '全部') {
+      return subjectFilter
+    }
+    const allSubjects = listSubjects(activeRecords)
+    return allSubjects.includes('语文') ? '语文' : allSubjects[0] ?? ''
+  }, [activeRecords, subjectFilter])
+
+  const singleRankTimeline = useMemo(
+    () => (student ? buildRankTimeline(activeRecords, student, rankSubjectForSingle) : []),
+    [activeRecords, student, rankSubjectForSingle],
+  )
 
   if (!activeDatasetId || activeRecords.length === 0) {
     return <EmptyState title="暂无数据" description="请先导入数据后再进行学生分析。" />
@@ -444,8 +487,10 @@ export function StudentAnalysisPage() {
                   <thead>
                     <tr>
                       <th>考试</th>
-                      <th>班排</th>
-                      <th>班排进退</th>
+                      <th>单科班排（{item.rankSubject}）</th>
+                      <th>单科班排进退</th>
+                      <th>总分班排</th>
+                      <th>总分班排进退</th>
                       <th>段排</th>
                       <th>段排进退</th>
                     </tr>
@@ -454,8 +499,10 @@ export function StudentAnalysisPage() {
                     {item.rankTimeline.map((row) => (
                       <tr key={`${item.student}-${row.exam}`}>
                         <td>{row.exam}</td>
-                        <td>{row.classRank ?? '无'}</td>
-                        <td>{renderDelta(row.classDelta)}</td>
+                        <td>{row.subjectClassRank ?? '无'}</td>
+                        <td>{renderDelta(row.subjectClassDelta)}</td>
+                        <td>{row.totalClassRank ?? '无'}</td>
+                        <td>{renderDelta(row.totalClassDelta)}</td>
                         <td>{row.gradeRank ?? '无'}</td>
                         <td>{renderDelta(row.gradeDelta)}</td>
                       </tr>
@@ -486,12 +533,15 @@ export function StudentAnalysisPage() {
 
           <div className="panel">
             <h3>{student} 班级/段名次进退</h3>
+            <p>单科班排按「{rankSubjectForSingle || '未识别科目'}」统计；总分班排按该次考试各科总分排序。</p>
             <table>
               <thead>
                 <tr>
                   <th>考试</th>
-                  <th>班排</th>
-                  <th>班排进退</th>
+                  <th>单科班排</th>
+                  <th>单科班排进退</th>
+                  <th>总分班排</th>
+                  <th>总分班排进退</th>
                   <th>段排</th>
                   <th>段排进退</th>
                 </tr>
@@ -500,8 +550,10 @@ export function StudentAnalysisPage() {
                 {singleRankTimeline.map((row) => (
                   <tr key={`${student}-${row.exam}`}>
                     <td>{row.exam}</td>
-                    <td>{row.classRank ?? '无'}</td>
-                    <td>{renderDelta(row.classDelta)}</td>
+                    <td>{row.subjectClassRank ?? '无'}</td>
+                    <td>{renderDelta(row.subjectClassDelta)}</td>
+                    <td>{row.totalClassRank ?? '无'}</td>
+                    <td>{renderDelta(row.totalClassDelta)}</td>
                     <td>{row.gradeRank ?? '无'}</td>
                     <td>{renderDelta(row.gradeDelta)}</td>
                   </tr>

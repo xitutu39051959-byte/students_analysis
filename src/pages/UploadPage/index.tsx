@@ -21,10 +21,12 @@ interface ParseStats {
 }
 
 interface ParsePreview {
+  source: string
   mode: 'long' | 'wide'
   headerRow: number
   subjectColumns: string[]
   ignoredColumns: string[]
+  recordCount: number
 }
 
 interface ParseResult {
@@ -100,7 +102,7 @@ function detectHeaderRow(rows: string[][]): { rowIndex: number; mode: 'long' | '
   throw new Error('无法识别表头，请确认包含“学生”列')
 }
 
-function parseLongTable(rows: string[][], headerRow: number, fallbackExamName: string): ParseResult {
+function parseLongTable(rows: string[][], headerRow: number, fallbackExamName: string, source: string): ParseResult {
   const headers = rows[headerRow]
   const studentIndex = findColumnIndex(headers, STUDENT_ALIASES)
   const examIndex = findColumnIndex(headers, EXAM_ALIASES)
@@ -133,15 +135,17 @@ function parseLongTable(rows: string[][], headerRow: number, fallbackExamName: s
   return {
     records,
     preview: {
+      source,
       mode: 'long',
       headerRow: headerRow + 1,
       subjectColumns: Array.from(new Set(records.map((item) => item.科目))).sort((a, b) => a.localeCompare(b)),
       ignoredColumns: [],
+      recordCount: records.length,
     },
   }
 }
 
-function parseWideTable(rows: string[][], headerRow: number, examName: string): ParseResult {
+function parseWideTable(rows: string[][], headerRow: number, examName: string, source: string): ParseResult {
   const headers = rows[headerRow].map((item) => normalizeCell(item))
   const studentIndex = findColumnIndex(headers, STUDENT_ALIASES)
 
@@ -206,36 +210,74 @@ function parseWideTable(rows: string[][], headerRow: number, examName: string): 
   return {
     records,
     preview: {
+      source,
       mode: 'wide',
       headerRow: headerRow + 1,
       subjectColumns: subjectIndices.map((item) => item.name),
       ignoredColumns: Array.from(new Set(ignoredColumns)),
+      recordCount: records.length,
     },
   }
 }
 
-async function parseScoreFile(file: File, examName: string): Promise<ParseResult> {
+function parseSheet(
+  rows: string[][],
+  sheetName: string,
+  examNameBase: string,
+  sourceFileName: string,
+  multiSheet: boolean,
+): ParseResult {
+  const source = `${sourceFileName} / ${sheetName}`
+  const { rowIndex, mode } = detectHeaderRow(rows)
+  const inferredExamName = multiSheet ? `${examNameBase}-${sheetName}` : examNameBase
+
+  return mode === 'long'
+    ? parseLongTable(rows, rowIndex, inferredExamName, source)
+    : parseWideTable(rows, rowIndex, inferredExamName, source)
+}
+
+async function parseScoreFile(file: File, examName: string): Promise<ParseResult[]> {
   const ext = file.name.split('.').pop()?.toLowerCase()
   if (ext !== 'csv' && ext !== 'xlsx' && ext !== 'xls') {
-    throw new Error('仅支持 CSV 或 Excel 文件（.csv/.xlsx/.xls）')
+    throw new Error(`文件 ${file.name} 不是支持的格式`) 
   }
 
   const buffer = await file.arrayBuffer()
   const workbook = XLSX.read(buffer, { type: 'array' })
-  const firstSheet = workbook.Sheets[workbook.SheetNames[0]]
-  const matrix = XLSX.utils.sheet_to_json<(string | number | null)[]>(firstSheet, {
-    header: 1,
-    defval: '',
-    raw: false,
-  })
-
-  const rows = matrix.map((row) => row.map((cell) => normalizeCell(cell)))
-  if (!rows.length) {
-    throw new Error('文件内容为空')
+  const sheetNames = workbook.SheetNames
+  if (!sheetNames.length) {
+    throw new Error(`文件 ${file.name} 没有可读取的工作表`)
   }
 
-  const { rowIndex, mode } = detectHeaderRow(rows)
-  return mode === 'long' ? parseLongTable(rows, rowIndex, examName) : parseWideTable(rows, rowIndex, examName)
+  const examNameBase = examName || stripFileExtension(file.name)
+  const results: ParseResult[] = []
+
+  for (const sheetName of sheetNames) {
+    const sheet = workbook.Sheets[sheetName]
+    const matrix = XLSX.utils.sheet_to_json<(string | number | null)[]>(sheet, {
+      header: 1,
+      defval: '',
+      raw: false,
+    })
+    const rows = matrix.map((row) => row.map((cell) => normalizeCell(cell)))
+    if (!rows.length) {
+      continue
+    }
+
+    try {
+      const parsed = parseSheet(rows, sheetName, examNameBase, file.name, sheetNames.length > 1)
+      results.push(parsed)
+    } catch {
+      // Ignore sheets that are not score tables, while still parsing other sheets.
+      continue
+    }
+  }
+
+  if (!results.length) {
+    throw new Error(`文件 ${file.name} 未识别到可用成绩表`) 
+  }
+
+  return results
 }
 
 function buildStats(records: ParsedRecord[]): ParseStats {
@@ -281,32 +323,42 @@ export function UploadPage() {
   const [term, setTerm] = useState('')
   const [examName, setExamName] = useState('')
 
-  const [fileName, setFileName] = useState('')
+  const [selectedFiles, setSelectedFiles] = useState<string[]>([])
   const [parsedRecords, setParsedRecords] = useState<ParsedRecord[]>([])
   const [stats, setStats] = useState<ParseStats | null>(null)
-  const [preview, setPreview] = useState<ParsePreview | null>(null)
+  const [previews, setPreviews] = useState<ParsePreview[]>([])
   const [errorMessage, setErrorMessage] = useState('')
   const [loading, setLoading] = useState(false)
 
-  const handleFileChange = async (file: File) => {
-    setLoading(true)
-    setFileName(file.name)
-    setErrorMessage('')
-    setStats(null)
-    setPreview(null)
-    setParsedRecords([])
-
-    const inferredExamName = examName || stripFileExtension(file.name)
-    if (!examName) {
-      setExamName(inferredExamName)
+  const handleFilesChange = async (files: FileList) => {
+    const fileList = Array.from(files)
+    if (!fileList.length) {
+      return
     }
 
+    setLoading(true)
+    setSelectedFiles(fileList.map((item) => item.name))
+    setErrorMessage('')
+    setStats(null)
+    setPreviews([])
+    setParsedRecords([])
+
     try {
-      const result = await parseScoreFile(file, inferredExamName)
-      setParsedRecords(result.records)
-      setStats(buildStats(result.records))
-      setPreview(result.preview)
-      showToast('文件解析成功', 'success')
+      const allParsed: ParsedRecord[] = []
+      const allPreviews: ParsePreview[] = []
+
+      for (const file of fileList) {
+        const parsedList = await parseScoreFile(file, examName)
+        for (const parsed of parsedList) {
+          allParsed.push(...parsed.records)
+          allPreviews.push(parsed.preview)
+        }
+      }
+
+      setParsedRecords(allParsed)
+      setPreviews(allPreviews)
+      setStats(buildStats(allParsed))
+      showToast(`解析成功：共识别 ${fileList.length} 个文件，${allParsed.length} 条记录`, 'success')
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '解析失败，请检查文件格式')
       showToast('文件解析失败', 'error')
@@ -357,22 +409,23 @@ export function UploadPage() {
           <input value={term} onChange={(e) => setTerm(e.target.value)} />
         </label>
         <label>
-          考试名称（宽表推荐填写）
+          考试名称（可选，宽表建议填写）
           <input value={examName} onChange={(e) => setExamName(e.target.value)} placeholder="例如：八上期末" />
         </label>
       </div>
 
       <div className="panel">
-        <p>支持长表（学生/考试/科目/分数）与宽表（学生+多科目列）自动识别</p>
+        <p>支持批量上传：长表（学生/考试/科目/分数）与宽表（学生+各科分数列）自动识别</p>
         <label>
-          选择文件（CSV/XLSX）
+          选择文件（可多选）
           <input
             type="file"
+            multiple
             accept=".csv,.xlsx,.xls"
             onChange={(e) => {
-              const file = e.target.files?.[0]
-              if (file) {
-                void handleFileChange(file)
+              const files = e.target.files
+              if (files) {
+                void handleFilesChange(files)
               }
             }}
           />
@@ -381,7 +434,7 @@ export function UploadPage() {
 
       {loading ? <p>正在解析文件...</p> : null}
       {errorMessage ? <p className="text-error">{errorMessage}</p> : null}
-      {fileName ? <p>当前文件：{fileName}</p> : null}
+      {selectedFiles.length ? <p>已选择文件：{selectedFiles.join('、')}</p> : null}
 
       {stats ? (
         <div className="panel">
@@ -393,23 +446,39 @@ export function UploadPage() {
             <span>总记录数：{stats.totalRecords}</span>
           </div>
 
-          {preview ? (
-            <div>
-              <p>
-                识别模式：{preview.mode === 'long' ? '长表' : '宽表'}，表头行：第 {preview.headerRow} 行
-              </p>
-              <p>识别科目列：{preview.subjectColumns.join('、') || '无'}</p>
-              <p>忽略列：{preview.ignoredColumns.join('、') || '无'}</p>
-            </div>
-          ) : null}
+          <h4>识别预览</h4>
+          <table>
+            <thead>
+              <tr>
+                <th>来源</th>
+                <th>模式</th>
+                <th>表头行</th>
+                <th>记录数</th>
+                <th>科目列</th>
+                <th>忽略列</th>
+              </tr>
+            </thead>
+            <tbody>
+              {previews.map((item, index) => (
+                <tr key={`${item.source}-${index}`}>
+                  <td>{item.source}</td>
+                  <td>{item.mode === 'long' ? '长表' : '宽表'}</td>
+                  <td>第 {item.headerRow} 行</td>
+                  <td>{item.recordCount}</td>
+                  <td>{item.subjectColumns.join('、') || '无'}</td>
+                  <td>{item.ignoredColumns.join('、') || '无'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
 
           <div className="panel-title-row">
-            <p>上传并解析成功。</p>
+            <p>批量解析成功。</p>
             <button onClick={() => void handleSave()}>确认导入并进入班级分析</button>
           </div>
         </div>
       ) : (
-        <EmptyState title="请上传成绩文件" description="支持两种格式：长表（学生/考试/科目/分数）或宽表（学生+各科分数列）。" />
+        <EmptyState title="请上传成绩文件" description="支持单个或多个 CSV/Excel 文件，自动识别并合并导入。" />
       )}
     </section>
   )

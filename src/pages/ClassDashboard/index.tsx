@@ -22,7 +22,7 @@ function RadarChart({ data }: { data: Array<{ subject: string; value: number }> 
   const size = 340
   const center = size / 2
   const radius = 125
-  const maxValue = Math.max(...data.map((d) => d.value), 1)
+  const maxValue = 100
 
   const angle = (index: number) => (Math.PI * 2 * index) / data.length - Math.PI / 2
   const axisPoints = data.map((_, idx) => {

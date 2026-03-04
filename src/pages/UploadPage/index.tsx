@@ -20,6 +20,23 @@ interface ParseStats {
   totalRecords: number
 }
 
+interface ParsePreview {
+  mode: 'long' | 'wide'
+  headerRow: number
+  subjectColumns: string[]
+  ignoredColumns: string[]
+}
+
+interface ParseResult {
+  records: ParsedRecord[]
+  preview: ParsePreview
+}
+
+const STUDENT_ALIASES = ['学生', '姓名']
+const EXAM_ALIASES = ['考试', '考试名称']
+const SUBJECT_ALIASES = ['科目', '学科']
+const SCORE_ALIASES = ['分数', '成绩']
+
 function normalizeCell(value: unknown): string {
   if (value === null || value === undefined) {
     return ''
@@ -27,7 +44,177 @@ function normalizeCell(value: unknown): string {
   return String(value).trim()
 }
 
-async function parseScoreFile(file: File): Promise<ParsedRecord[]> {
+function stripFileExtension(fileName: string): string {
+  return fileName.replace(/\.[^.]+$/, '')
+}
+
+function isIgnoredWideColumn(name: string): boolean {
+  return /(排|进退|总分|折算|座号|排名)/.test(name)
+}
+
+function parseScoreValue(raw: string): number | null {
+  if (!raw) {
+    return null
+  }
+  const value = Number(raw)
+  if (Number.isNaN(value)) {
+    return null
+  }
+  if (value < 0 || value > 150) {
+    return null
+  }
+  return value
+}
+
+function findColumnIndex(headers: string[], aliases: string[]): number {
+  return headers.findIndex((header) => aliases.includes(header))
+}
+
+function detectHeaderRow(rows: string[][]): { rowIndex: number; mode: 'long' | 'wide' } {
+  let wideCandidate = -1
+
+  for (let index = 0; index < Math.min(rows.length, 12); index += 1) {
+    const row = rows[index]
+    const hasStudent = row.some((cell) => STUDENT_ALIASES.includes(cell))
+    if (!hasStudent) {
+      continue
+    }
+
+    const hasExam = row.some((cell) => EXAM_ALIASES.includes(cell))
+    const hasSubject = row.some((cell) => SUBJECT_ALIASES.includes(cell))
+    const hasScore = row.some((cell) => SCORE_ALIASES.includes(cell))
+
+    if (hasExam && hasSubject && hasScore) {
+      return { rowIndex: index, mode: 'long' }
+    }
+
+    if (wideCandidate === -1) {
+      wideCandidate = index
+    }
+  }
+
+  if (wideCandidate !== -1) {
+    return { rowIndex: wideCandidate, mode: 'wide' }
+  }
+
+  throw new Error('无法识别表头，请确认包含“学生”列')
+}
+
+function parseLongTable(rows: string[][], headerRow: number, fallbackExamName: string): ParseResult {
+  const headers = rows[headerRow]
+  const studentIndex = findColumnIndex(headers, STUDENT_ALIASES)
+  const examIndex = findColumnIndex(headers, EXAM_ALIASES)
+  const subjectIndex = findColumnIndex(headers, SUBJECT_ALIASES)
+  const scoreIndex = findColumnIndex(headers, SCORE_ALIASES)
+
+  if (studentIndex < 0 || subjectIndex < 0 || scoreIndex < 0) {
+    throw new Error('长表识别失败：缺少学生/科目/分数字段')
+  }
+
+  const records: ParsedRecord[] = []
+  for (let rowIndex = headerRow + 1; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex]
+    const student = normalizeCell(row[studentIndex])
+    const exam = normalizeCell(row[examIndex]) || fallbackExamName
+    const subject = normalizeCell(row[subjectIndex])
+    const score = parseScoreValue(normalizeCell(row[scoreIndex]))
+
+    if (!student || !exam || !subject || score === null) {
+      continue
+    }
+
+    records.push({ 学生: student, 考试: exam, 科目: subject, 分数: score })
+  }
+
+  if (!records.length) {
+    throw new Error('未解析到有效记录，请检查长表数据')
+  }
+
+  return {
+    records,
+    preview: {
+      mode: 'long',
+      headerRow: headerRow + 1,
+      subjectColumns: Array.from(new Set(records.map((item) => item.科目))).sort((a, b) => a.localeCompare(b)),
+      ignoredColumns: [],
+    },
+  }
+}
+
+function parseWideTable(rows: string[][], headerRow: number, examName: string): ParseResult {
+  const headers = rows[headerRow].map((item) => normalizeCell(item))
+  const studentIndex = findColumnIndex(headers, STUDENT_ALIASES)
+
+  if (studentIndex < 0) {
+    throw new Error('宽表识别失败：缺少学生列')
+  }
+
+  const subjectIndices: Array<{ index: number; name: string }> = []
+  const ignoredColumns: string[] = []
+
+  for (let columnIndex = 0; columnIndex < headers.length; columnIndex += 1) {
+    const header = headers[columnIndex]
+    if (!header || columnIndex === studentIndex) {
+      continue
+    }
+
+    if (isIgnoredWideColumn(header)) {
+      ignoredColumns.push(header)
+      continue
+    }
+
+    const hasNumeric = rows.slice(headerRow + 1).some((row) => parseScoreValue(normalizeCell(row[columnIndex])) !== null)
+
+    if (hasNumeric) {
+      subjectIndices.push({ index: columnIndex, name: header })
+    } else {
+      ignoredColumns.push(header)
+    }
+  }
+
+  if (!subjectIndices.length) {
+    throw new Error('宽表识别失败：未识别到科目列')
+  }
+
+  const records: ParsedRecord[] = []
+  for (let rowIndex = headerRow + 1; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex]
+    const student = normalizeCell(row[studentIndex])
+    if (!student) {
+      continue
+    }
+
+    for (const subject of subjectIndices) {
+      const score = parseScoreValue(normalizeCell(row[subject.index]))
+      if (score === null) {
+        continue
+      }
+
+      records.push({
+        学生: student,
+        考试: examName,
+        科目: subject.name,
+        分数: score,
+      })
+    }
+  }
+
+  if (!records.length) {
+    throw new Error('未解析到有效记录，请检查宽表数据')
+  }
+
+  return {
+    records,
+    preview: {
+      mode: 'wide',
+      headerRow: headerRow + 1,
+      subjectColumns: subjectIndices.map((item) => item.name),
+      ignoredColumns: Array.from(new Set(ignoredColumns)),
+    },
+  }
+}
+
+async function parseScoreFile(file: File, examName: string): Promise<ParseResult> {
   const ext = file.name.split('.').pop()?.toLowerCase()
   if (ext !== 'csv' && ext !== 'xlsx' && ext !== 'xls') {
     throw new Error('仅支持 CSV 或 Excel 文件（.csv/.xlsx/.xls）')
@@ -36,47 +223,19 @@ async function parseScoreFile(file: File): Promise<ParsedRecord[]> {
   const buffer = await file.arrayBuffer()
   const workbook = XLSX.read(buffer, { type: 'array' })
   const firstSheet = workbook.Sheets[workbook.SheetNames[0]]
-  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(firstSheet, {
+  const matrix = XLSX.utils.sheet_to_json<(string | number | null)[]>(firstSheet, {
+    header: 1,
     defval: '',
     raw: false,
   })
 
+  const rows = matrix.map((row) => row.map((cell) => normalizeCell(cell)))
   if (!rows.length) {
     throw new Error('文件内容为空')
   }
 
-  const required = ['学生', '考试', '科目', '分数']
-  const headers = Object.keys(rows[0] ?? {})
-  const missingHeaders = required.filter((header) => !headers.includes(header))
-  if (missingHeaders.length > 0) {
-    throw new Error(`缺少必要列：${missingHeaders.join('、')}`)
-  }
-
-  const records: ParsedRecord[] = []
-
-  for (let index = 0; index < rows.length; index += 1) {
-    const row = rows[index]
-    const student = normalizeCell(row['学生'])
-    const exam = normalizeCell(row['考试'])
-    const subject = normalizeCell(row['科目'])
-    const score = Number(normalizeCell(row['分数']))
-
-    if (!student || !exam || !subject || Number.isNaN(score)) {
-      continue
-    }
-
-    if (score < 0 || score > 100) {
-      throw new Error(`第 ${index + 2} 行分数超出范围（0-100）`)
-    }
-
-    records.push({ 学生: student, 考试: exam, 科目: subject, 分数: score })
-  }
-
-  if (!records.length) {
-    throw new Error('未解析到有效记录，请检查文件内容')
-  }
-
-  return records
+  const { rowIndex, mode } = detectHeaderRow(rows)
+  return mode === 'long' ? parseLongTable(rows, rowIndex, examName) : parseWideTable(rows, rowIndex, examName)
 }
 
 function buildStats(records: ParsedRecord[]): ParseStats {
@@ -120,10 +279,12 @@ export function UploadPage() {
   const [datasetName, setDatasetName] = useState(`数据集-${new Date().toLocaleDateString('zh-CN')}`)
   const [className, setClassName] = useState('')
   const [term, setTerm] = useState('')
+  const [examName, setExamName] = useState('')
 
   const [fileName, setFileName] = useState('')
   const [parsedRecords, setParsedRecords] = useState<ParsedRecord[]>([])
   const [stats, setStats] = useState<ParseStats | null>(null)
+  const [preview, setPreview] = useState<ParsePreview | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -132,12 +293,19 @@ export function UploadPage() {
     setFileName(file.name)
     setErrorMessage('')
     setStats(null)
+    setPreview(null)
     setParsedRecords([])
 
+    const inferredExamName = examName || stripFileExtension(file.name)
+    if (!examName) {
+      setExamName(inferredExamName)
+    }
+
     try {
-      const records = await parseScoreFile(file)
-      setParsedRecords(records)
-      setStats(buildStats(records))
+      const result = await parseScoreFile(file, inferredExamName)
+      setParsedRecords(result.records)
+      setStats(buildStats(result.records))
+      setPreview(result.preview)
       showToast('文件解析成功', 'success')
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '解析失败，请检查文件格式')
@@ -188,10 +356,14 @@ export function UploadPage() {
           学期
           <input value={term} onChange={(e) => setTerm(e.target.value)} />
         </label>
+        <label>
+          考试名称（宽表推荐填写）
+          <input value={examName} onChange={(e) => setExamName(e.target.value)} placeholder="例如：八上期末" />
+        </label>
       </div>
 
       <div className="panel">
-        <p>请上传 CSV 或 Excel 文件，字段格式：学生、考试、科目、分数</p>
+        <p>支持长表（学生/考试/科目/分数）与宽表（学生+多科目列）自动识别</p>
         <label>
           选择文件（CSV/XLSX）
           <input
@@ -220,13 +392,24 @@ export function UploadPage() {
             <span>科目数量：{stats.subjectCount}</span>
             <span>总记录数：{stats.totalRecords}</span>
           </div>
+
+          {preview ? (
+            <div>
+              <p>
+                识别模式：{preview.mode === 'long' ? '长表' : '宽表'}，表头行：第 {preview.headerRow} 行
+              </p>
+              <p>识别科目列：{preview.subjectColumns.join('、') || '无'}</p>
+              <p>忽略列：{preview.ignoredColumns.join('、') || '无'}</p>
+            </div>
+          ) : null}
+
           <div className="panel-title-row">
             <p>上传并解析成功。</p>
-            <button onClick={() => void handleSave()}>保存并进入班级分析</button>
+            <button onClick={() => void handleSave()}>确认导入并进入班级分析</button>
           </div>
         </div>
       ) : (
-        <EmptyState title="请上传成绩文件" description="必填列：学生、考试、科目、分数。" />
+        <EmptyState title="请上传成绩文件" description="支持两种格式：长表（学生/考试/科目/分数）或宽表（学生+各科分数列）。" />
       )}
     </section>
   )

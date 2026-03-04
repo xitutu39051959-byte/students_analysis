@@ -16,6 +16,58 @@ function renderDelta(delta: number | null) {
   return delta.toFixed(1)
 }
 
+interface StudentOverviewRow {
+  student: string
+  latestExam: string
+  previousExam: string
+  latestAvg: number | null
+  previousAvg: number | null
+  delta: number | null
+  weakSubject: string
+}
+
+function buildOverview(records: ReturnType<typeof useDatasetStore>['activeRecords']): StudentOverviewRow[] {
+  const students = listStudents(records)
+  const exams = listExams(records)
+  const currentExam = exams[exams.length - 1]?.exam
+
+  if (!currentExam) {
+    return []
+  }
+
+  return students.map((student) => {
+    const comparisons = getStudentComparison(records, student, currentExam)
+    const validCurrent = comparisons.filter((item) => item.currentScore !== null)
+    const validPrevious = comparisons.filter((item) => item.previousScore !== null)
+
+    const latestAvg =
+      validCurrent.length > 0
+        ? validCurrent.reduce((sum, item) => sum + (item.currentScore ?? 0), 0) / validCurrent.length
+        : null
+
+    const previousAvg =
+      validPrevious.length > 0
+        ? validPrevious.reduce((sum, item) => sum + (item.previousScore ?? 0), 0) / validPrevious.length
+        : null
+
+    const delta = latestAvg !== null && previousAvg !== null ? latestAvg - previousAvg : null
+
+    const weakest = validCurrent
+      .slice()
+      .sort((a, b) => (a.currentScore ?? 999) - (b.currentScore ?? 999))[0]
+
+    return {
+      student,
+      latestExam: currentExam,
+      previousExam: comparisons[0]?.previousExam ?? '无',
+      latestAvg,
+      previousAvg,
+      delta,
+      weakSubject: weakest?.subject ?? '无',
+    }
+  })
+}
+
 export function StudentAnalysisPage() {
   const { activeDatasetId, activeRecords } = useDatasetStore()
 
@@ -23,6 +75,7 @@ export function StudentAnalysisPage() {
   const exams = useMemo(() => listExams(activeRecords), [activeRecords])
   const subjects = useMemo(() => listSubjects(activeRecords), [activeRecords])
 
+  const [viewMode, setViewMode] = useState<'single' | 'all'>('all')
   const [student, setStudent] = useState('')
   const [subjectFilter, setSubjectFilter] = useState('全部')
   const [currentExam, setCurrentExam] = useState('')
@@ -45,6 +98,8 @@ export function StudentAnalysisPage() {
     return getStudentComparison(activeRecords, student, exam)
   }, [activeRecords, student, currentExam, exams])
 
+  const overviewRows = useMemo(() => buildOverview(activeRecords), [activeRecords])
+
   if (!activeDatasetId || activeRecords.length === 0) {
     return <EmptyState title="暂无数据" description="请先导入数据后再进行学生分析。" />
   }
@@ -55,43 +110,85 @@ export function StudentAnalysisPage() {
 
       <div className="panel filter-row">
         <label>
-          学生
-          <select value={student} onChange={(e) => setStudent(e.target.value)}>
-            <option value="">请选择学生</option>
-            {students.map((item) => (
-              <option key={item} value={item}>
-                {item}
-              </option>
-            ))}
+          查看范围
+          <select value={viewMode} onChange={(e) => setViewMode(e.target.value as 'single' | 'all')}>
+            <option value="all">全部学生</option>
+            <option value="single">单个学生</option>
           </select>
         </label>
 
-        <label>
-          科目
-          <select value={subjectFilter} onChange={(e) => setSubjectFilter(e.target.value)}>
-            <option value="全部">全部</option>
-            {subjects.map((item) => (
-              <option key={item} value={item}>
-                {item}
-              </option>
-            ))}
-          </select>
-        </label>
+        {viewMode === 'single' ? (
+          <>
+            <label>
+              学生
+              <select value={student} onChange={(e) => setStudent(e.target.value)}>
+                <option value="">请选择学生</option>
+                {students.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-        <label>
-          当前考试
-          <select value={currentExam} onChange={(e) => setCurrentExam(e.target.value)}>
-            <option value="">默认最近一次</option>
-            {exams.map((item) => (
-              <option key={`${item.exam}-${item.examDate}`} value={item.exam}>
-                {item.exam}（{item.examDate}）
-              </option>
-            ))}
-          </select>
-        </label>
+            <label>
+              科目
+              <select value={subjectFilter} onChange={(e) => setSubjectFilter(e.target.value)}>
+                <option value="全部">全部</option>
+                {subjects.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              当前考试
+              <select value={currentExam} onChange={(e) => setCurrentExam(e.target.value)}>
+                <option value="">默认最近一次</option>
+                {exams.map((item) => (
+                  <option key={`${item.exam}-${item.examDate}`} value={item.exam}>
+                    {item.exam}（{item.examDate}）
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        ) : null}
       </div>
 
-      {!student ? (
+      {viewMode === 'all' ? (
+        <div className="panel">
+          <h3>全部学生概览（最近一次考试）</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>学生</th>
+                <th>当前考试</th>
+                <th>上一次考试</th>
+                <th>当前均分</th>
+                <th>上次均分</th>
+                <th>变化</th>
+                <th>最低科目</th>
+              </tr>
+            </thead>
+            <tbody>
+              {overviewRows.map((row) => (
+                <tr key={row.student}>
+                  <td>{row.student}</td>
+                  <td>{row.latestExam}</td>
+                  <td>{row.previousExam}</td>
+                  <td>{row.latestAvg === null ? '无' : row.latestAvg.toFixed(1)}</td>
+                  <td>{row.previousAvg === null ? '无' : row.previousAvg.toFixed(1)}</td>
+                  <td>{renderDelta(row.delta)}</td>
+                  <td>{row.weakSubject}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : !student ? (
         <EmptyState title="请选择学生" description="选择学生后将展示成绩变化与上一次考试对比。" />
       ) : (
         <>

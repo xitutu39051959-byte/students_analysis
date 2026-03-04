@@ -1,0 +1,199 @@
+﻿@import './tokens.css';
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+.app-shell {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: end;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 28px;
+}
+
+.app-header p {
+  margin: 6px 0 0;
+  color: #4c6470;
+}
+
+.app-nav {
+  display: flex;
+  gap: 10px;
+  margin: 12px 0;
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  flex-wrap: wrap;
+}
+
+.app-nav a {
+  text-decoration: none;
+  color: #0d4458;
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+
+.app-nav a.active {
+  color: white;
+  background: var(--primary);
+}
+
+.app-main {
+  display: grid;
+  gap: 12px;
+}
+
+.page-section h2 {
+  margin: 4px 0;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  overflow: auto;
+}
+
+.panel-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.filter-row,
+.form-grid,
+.stats-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.form-grid label,
+.filter-row label {
+  display: grid;
+  gap: 6px;
+  min-width: 220px;
+}
+
+input,
+select,
+button {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #fff;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  border: 1px solid var(--border);
+  padding: 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+th {
+  background: #f0f5f8;
+}
+
+.empty-state {
+  background: var(--primary-light);
+  border: 1px dashed #89bdd0;
+  border-radius: 12px;
+  padding: 18px;
+}
+
+.empty-state h3 {
+  margin-top: 0;
+}
+
+.text-error {
+  color: var(--danger);
+}
+
+.toast-list {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.toast {
+  color: #fff;
+  border: none;
+}
+
+.toast.info {
+  background: #4c6470;
+}
+
+.toast.success {
+  background: var(--ok);
+}
+
+.toast.error {
+  background: var(--danger);
+}
+
+@media (max-width: 768px) {
+  .app-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .dataset-switcher {
+    width: 100%;
+  }
+
+  .dataset-switcher select {
+    width: 100%;
+  }
+}

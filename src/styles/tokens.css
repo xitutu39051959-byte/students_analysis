@@ -1,0 +1,11 @@
+﻿:root {
+  font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif;
+  color: #132027;
+  background: linear-gradient(180deg, #f3f7f9 0%, #eef3f6 100%);
+  --primary: #0d6b8a;
+  --primary-light: #dff2f8;
+  --danger: #b42318;
+  --ok: #067647;
+  --border: #d0d9e1;
+  --panel: #ffffff;
+}
